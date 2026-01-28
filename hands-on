@@ -203,3 +203,56 @@ o	Writes vectors to GCS
 5.	Vertex AI Vector Search indexes vectors
 6.	Queries hit endpoint → semantic results
 
+
+###############################################################################################################
+
+Option 1: Build locally with Docker (no Cloud Build)
+
+Best if Docker is available on your machine or Cloud Shell
+
+Steps
+docker build -t batch-processor .
+
+
+Test locally:
+
+docker run -p 8080:8080 batch-processor
+
+
+If this works, you can push later.
+
+Pros
+
+No IAM / Cloud Build headaches
+
+Fast feedback
+
+Great for debugging
+
+Cons
+
+You still need a registry to deploy to Cloud Run
+
+✅ Option 2: Build locally + push to Artifact Registry (RECOMMENDED)
+
+This completely bypasses Cloud Build.
+
+1️⃣ Create Artifact Registry repo (once)
+gcloud artifacts repositories create batch-repo \
+  --repository-format=docker \
+  --location=us-central1
+
+2️⃣ Authenticate Docker
+gcloud auth configure-docker us-central1-docker.pkg.dev
+
+3️⃣ Build + tag
+docker build -t us-central1-docker.pkg.dev/$PROJECT_ID/batch-repo/batch-processor:latest .
+
+4️⃣ Push
+docker push us-central1-docker.pkg.dev/$PROJECT_ID/batch-repo/batch-processor:latest
+
+Pros
+
+✔ No Cloud Build permissions needed
+✔ Fully under your control
+✔ Most reliable in locked-down
