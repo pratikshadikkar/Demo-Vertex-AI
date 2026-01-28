@@ -268,3 +268,27 @@ docker run -p 8080:8080 \
 gcloud projects add-iam-policy-binding $PROJECT_ID \
   --member="serviceAccount:batch-processor-sa@$PROJECT_ID.iam.gserviceaccount.com" \
   --role="roles/aiplatform.user"
+
+
+FIX #1 (FASTEST – recommended for Cloud Shell)
+Step 1: Set quota project explicitly
+
+Run this once in Cloud Shell:
+
+gcloud auth application-default set-quota-project us-con-gcp-sbx-dep0031-081524
+
+
+(Use your exact project ID)
+
+You should see:
+
+Updated property [billing/quota_project].
+
+Step 2: Verify ADC project
+gcloud auth application-default show
+
+
+You should see:
+
+"quota_project_id": "us-con-gcp-sbx-dep0031-081524"
+
