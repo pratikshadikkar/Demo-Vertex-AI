@@ -263,3 +263,8 @@ docker run -p 8080:8080 \
   -e RAW_BUCKET=raw-input-bucket \
   -e OUT_BUCKET=embedding-output-bucket \
   batch-processor
+
+
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:batch-processor-sa@$PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/aiplatform.user"
