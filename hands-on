@@ -1,0 +1,205 @@
+STEP 1️— Enable Required APIs
+gcloud services enable \
+  storage.googleapis.com \
+  pubsub.googleapis.com \
+  run.googleapis.com \
+  aiplatform.googleapis.com \
+  cloudbuild.googleapis.com
+________________________________________
+STEP 2️ — Create GCS Buckets
+gsutil mb -l us-central1 gs://raw-docs-bucket-123
+gsutil mb -l us-central1 gs://processed-embeddings-123
+Buckets must be same region as Vector Search
+________________________________________
+STEP 3️ — Create Pub/Sub Topic
+gcloud pubsub topics create doc-ingest-topic
+________________________________________
+STEP 4️ — Connect GCS → Pub/Sub
+gsutil notification create \
+  -t doc-ingest-topic \
+  -f json \
+  -e OBJECT_FINALIZE \
+  gs://raw-docs-bucket-123
+Every file upload now emits a Pub/Sub event.
+________________________________________
+STEP 5️ — Create Service Account for Cloud Run
+gcloud iam service-accounts create batch-processor-sa
+Grant permissions:
+PROJECT_ID=$(gcloud config get-value project)
+
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:batch-processor-sa@$PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/storage.objectAdmin"
+
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:batch-processor-sa@$PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/pubsub.subscriber"
+
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:batch-processor-sa@$PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/aiplatform.user"
+________________________________________
+STEP 6️ — Cloud Run Batch Processor (Python)
+Folder Structure
+batch-processor/
+├── main.py
+├── requirements.txt
+└── Dockerfile
+________________________________________
+requirements.txt
+fastapi
+uvicorn
+google-cloud-storage
+google-cloud-aiplatform
+________________________________________
+main.py (Production-grade)
+import base64
+import json
+import os
+import uuid
+from fastapi import FastAPI, Request
+from google.cloud import storage
+import vertexai
+from vertexai.preview.language_models import TextEmbeddingModel
+
+PROJECT_ID = os.environ["PROJECT_ID"]
+REGION = os.environ["REGION"]
+RAW_BUCKET = os.environ["RAW_BUCKET"]
+OUT_BUCKET = os.environ["OUT_BUCKET"]
+
+vertexai.init(project=PROJECT_ID, location=REGION)
+
+embedding_model = TextEmbeddingModel.from_pretrained("text-embedding-004")
+storage_client = storage.Client()
+
+app = FastAPI()
+
+def chunk_text(text, chunk_size=512):
+    return [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
+
+@app.post("/")
+async def ingest(request: Request):
+    envelope = await request.json()
+    message = envelope["message"]
+    data = base64.b64decode(message["data"]).decode("utf-8")
+    event = json.loads(data)
+
+    bucket_name = event["bucket"]
+    file_name = event["name"]
+
+    blob = storage_client.bucket(bucket_name).blob(file_name)
+    text = blob.download_as_text()
+
+    chunks = chunk_text(text)
+
+    vectors = []
+    embeddings = embedding_model.get_embeddings(chunks)
+
+    for i, emb in enumerate(embeddings):
+        vectors.append({
+            "id": f"{file_name}-{i}",
+            "embedding": emb.values,
+            "metadata": {
+                "source_file": file_name,
+                "chunk_index": i
+            }
+        })
+
+    out_blob = storage_client.bucket(OUT_BUCKET).blob(
+        f"{file_name}-{uuid.uuid4()}.json"
+    )
+
+    out_blob.upload_from_string(
+        json.dumps(vectors),
+        content_type="application/json"
+    )
+
+    return {"status": "success", "chunks": len(chunks)}
+________________________________________
+Dockerfile
+FROM python:3.10-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY main.py .
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+________________________________________
+STEP 7️ — Build & Deploy Cloud Run
+gcloud builds submit --tag gcr.io/$PROJECT_ID/batch-processor
+gcloud run deploy batch-processor \
+  --image gcr.io/$PROJECT_ID/batch-processor \
+  --service-account batch-processor-sa@$PROJECT_ID.iam.gserviceaccount.com \
+  --set-env-vars \
+PROJECT_ID=$PROJECT_ID,\
+REGION=us-central1,\
+RAW_BUCKET=raw-docs-bucket-123,\
+OUT_BUCKET=processed-embeddings-123 \
+  --no-allow-unauthenticated
+________________________________________
+STEP 8️ — Pub/Sub Push Subscription → Cloud Run
+gcloud pubsub subscriptions create doc-ingest-push \
+  --topic doc-ingest-topic \
+  --push-endpoint=https://BATCH_RUN_URL \
+  --push-auth-service-account=batch-processor-sa@$PROJECT_ID.iam.gserviceaccount.com
+________________________________________
+STEP 9️ — Test the Pipeline
+echo "Vertex AI Vector Search is awesome" > test.txt
+gsutil cp test.txt gs://raw-docs-bucket-123/
+✔ Logs:
+gcloud run services logs read batch-processor
+✔ Output JSON appears in:
+gs://processed-embeddings-123/
+________________________________________
+STEP  — Vertex AI Vector Search 2.0 (Batch Index)
+1️ Create Index (Console)
+Vertex AI → Vector Search → Indexes → Create
+Field	Value
+Type	Batch
+Dimensions	768
+Distance	Dot Product
+Source	gs://processed-embeddings-123/
+Shard size	Small
+⏳ Takes 30–60 minutes.
+________________________________________
+2️ Create Endpoint
+gcloud ai index-endpoints create \
+  --display-name="embeddings-endpoint" \
+  --region=us-central1
+________________________________________
+3️ Deploy Index
+gcloud ai index-endpoints deploy-index ENDPOINT_ID \
+  --deployed-index-id=my-deployed-index \
+  --index=INDEX_ID \
+  --region=us-central1
+________________________________________
+STEP 1️1 — (Optional) Query Vector Search (Python)
+from google.cloud import aiplatform
+
+aiplatform.init(project=PROJECT_ID, location="us-central1")
+
+endpoint = aiplatform.MatchingEngineIndexEndpoint(
+    index_endpoint_name=ENDPOINT_ID
+)
+
+response = endpoint.find_neighbors(
+    deployed_index_id="my-deployed-index",
+    queries=[query_embedding],
+    num_neighbors=5
+)
+________________________________________
+ END-TO-END FLOW (Technical)
+1.	File uploaded → GCS
+2.	GCS emits Pub/Sub event
+3.	Pub/Sub pushes event to Cloud Run
+4.	Cloud Run:
+o	Reads file
+o	Chunks text
+o	Calls Vertex AI embedding model
+o	Writes vectors to GCS
+5.	Vertex AI Vector Search indexes vectors
+6.	Queries hit endpoint → semantic results
+
