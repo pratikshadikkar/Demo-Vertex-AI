@@ -256,3 +256,10 @@ Pros
 ✔ No Cloud Build permissions needed
 ✔ Fully under your control
 ✔ Most reliable in locked-down
+
+docker run -p 8080:8080 \
+  -e PROJECT_ID=us-con-gcp-sbx-dep0031-081524 \
+  -e REGION=us-central1 \
+  -e RAW_BUCKET=raw-input-bucket \
+  -e OUT_BUCKET=embedding-output-bucket \
+  batch-processor
