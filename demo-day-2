@@ -1,0 +1,19 @@
+gcloud services enable \
+  cloudresourcemanager.googleapis.com \
+  iam.googleapis.com \
+  serviceusage.googleapis.com \
+  storage.googleapis.com \
+  pubsub.googleapis.com \
+  run.googleapis.com \
+  cloudbuild.googleapis.com \
+  artifactregistry.googleapis.com \
+  aiplatform.googleapis.com \
+  discoveryengine.googleapis.com \
+  logging.googleapis.com \
+  monitoring.googleapis.com
+
+
+  gcloud run services add-iam-policy-binding batch-processor \
+  --member="serviceAccount:batch-processor-sa@us-con-gcp-sbx-dep0031-081524.iam.gserviceaccount.com" \
+  --role="roles/run.invoker" \
+  --region us-central1
