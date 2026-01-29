@@ -17,3 +17,92 @@ gcloud services enable \
   --member="serviceAccount:batch-processor-sa@us-con-gcp-sbx-dep0031-081524.iam.gserviceaccount.com" \
   --role="roles/run.invoker" \
   --region us-central1
+
+
+variable "project_id" {
+  type = string
+}
+
+variable "region" {
+  type    = string
+  default = "us-central1"
+}
+
+variable "vector_index_name" {
+  type    = string
+  default = "doc-embeddings-index"
+}
+
+variable "vector_endpoint_name" {
+  type    = string
+  default = "doc-embeddings-endpoint"
+}
+
+variable "embeddings_bucket" {
+  type        = string
+  description = "Bucket where embedding JSON files are written"
+}
+
+variable "embedding_dimensions" {
+  type    = number
+  default = 768
+}
+Vertex AI Vector Search Terraform (vector_search.tf)
+resource "google_vertex_ai_index" "vector_index" {
+  project      = var.project_id
+  region       = var.region
+  display_name = var.vector_index_name
+
+  metadata {
+    contents_delta_uri = "gs://${var.embeddings_bucket}/"
+
+    config {
+      dimensions = var.embedding_dimensions
+
+      approximate_neighbors_count = 100
+      distance_measure_type       = "COSINE_DISTANCE"
+
+      algorithm_config {
+        tree_ah_config {
+          leaf_node_embedding_count = 500
+          leaf_nodes_to_search      = 1
+        }
+      }
+    }
+  }
+
+  index_update_method = "BATCH_UPDATE"
+}
+Index Endpoint (vector_endpoint.tf)
+resource "google_vertex_ai_index_endpoint" "vector_endpoint" {
+  project      = var.project_id
+  region       = var.region
+  display_name = var.vector_endpoint_name
+
+  public_endpoint_enabled = true
+}
+Deploy Index to Endpoint (vector_deploy.tf)
+resource "google_vertex_ai_index_endpoint_deployed_index" "deploy_index" {
+  project          = var.project_id
+  region           = var.region
+  index_endpoint   = google_vertex_ai_index_endpoint.vector_endpoint.name
+  index            = google_vertex_ai_index.vector_index.name
+  deployed_index_id = "doc_embeddings_deployed"
+
+  dedicated_resources {
+    machine_spec {
+      machine_type = "e2-standard-2"
+    }
+
+    min_replica_count = 1
+    max_replica_count = 1
+  }
+}
+IAM (required for indexing)
+Ensure your batch / indexing service account has:
+
+resource "google_project_iam_member" "vertex_user" {
+  project = var.project_id
+  role    = "roles/aiplatform.user"
+  member  = "serviceAccount:${google_service_account.batch.email}"
+}
