@@ -1,0 +1,64 @@
+import base64
+import json
+import os
+import uuid
+from fastapi import FastAPI, Request
+from google.cloud import storage
+import vertexai
+from vertexai.preview.language_models import TextEmbeddingModel
+
+PROJECT_ID = os.environ["PROJECT_ID"]
+REGION = os.environ["REGION"]
+RAW_BUCKET = os.environ["RAW_BUCKET"]
+OUT_BUCKET = os.environ["OUT_BUCKET"]
+
+vertexai.init(project=PROJECT_ID, location=REGION)
+
+embedding_model = TextEmbeddingModel.from_pretrained("text-embedding-004")
+storage_client = storage.Client()
+
+app = FastAPI()
+
+def chunk_text(text, chunk_size=512):
+    return [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
+
+@app.post("/")
+async def ingest(request: Request):
+    envelope = await request.json()
+    message = envelope["message"]
+    data = base64.b64decode(message["data"]).decode("utf-8")
+    event = json.loads(data)
+
+    bucket_name = event["bucket"]
+    file_name = event["name"]
+
+    blob = storage_client.bucket(bucket_name).blob(file_name)
+    text = blob.download_as_text()
+
+    chunks = chunk_text(text)
+
+    vectors = []
+    embeddings = embedding_model.get_embeddings(chunks)
+
+    for i, emb in enumerate(embeddings):
+        vectors.append({
+            "id": f"{file_name}-{i}",
+            "embedding": emb.values,
+            "metadata": {
+                "source_file": file_name,
+                "chunk_index": i
+            }
+        })
+
+    out_blob = storage_client.bucket(OUT_BUCKET).blob(
+        f"{file_name}-{uuid.uuid4()}.json"
+    )
+
+    jsonl_data = "\n".join(json.dumps(v) for v in vectors)
+
+    out_blob.upload_from_string(
+        jsonl_data,
+        content_type="application/json"
+    )
+
+    return {"status": "success", "chunks": len(chunks)}
