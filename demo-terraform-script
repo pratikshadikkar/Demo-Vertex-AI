@@ -1,0 +1,203 @@
+terraform {
+  required_version = ">= 1.4.0"
+
+  required_providers {
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 5.20"
+    }
+  }
+}
+
+provider "google" {
+  project = var.project_id
+  region  = var.region
+}
+
+data "google_project" "current" {
+  project_id = var.project_id
+}
+
+# ---------------------------------------------------
+# Enable APIs (safe if already enabled)
+# ---------------------------------------------------
+resource "google_project_service" "apis" {
+  for_each = toset([
+    "run.googleapis.com",
+    "storage.googleapis.com",
+    "pubsub.googleapis.com",
+    "artifactregistry.googleapis.com",
+    "aiplatform.googleapis.com",
+    "cloudbuild.googleapis.com",
+    "logging.googleapis.com"
+  ])
+
+  service            = each.value
+  disable_on_destroy = false
+}
+
+# ---------------------------------------------------
+# GCS Buckets (NEW)
+# ---------------------------------------------------
+resource "google_storage_bucket" "raw" {
+  name     = var.raw_bucket
+  location = var.region
+
+  uniform_bucket_level_access = true
+}
+
+resource "google_storage_bucket" "out" {
+  name     = var.out_bucket
+  location = var.region
+
+  uniform_bucket_level_access = true
+}
+
+# ---------------------------------------------------
+# Pub/Sub
+# ---------------------------------------------------
+resource "google_pubsub_topic" "ingest" {
+  name = "doc-ingest-topic"
+}
+
+resource "google_pubsub_subscription" "push" {
+  name  = "doc-ingest-push"
+  topic = google_pubsub_topic.ingest.id
+
+  push_config {
+    push_endpoint = google_cloud_run_v2_service.batch.uri
+
+    oidc_token {
+      service_account_email = google_service_account.batch.email
+      audience               = google_cloud_run_v2_service.batch.uri
+    }
+  }
+
+  ack_deadline_seconds = 10
+}
+
+# Allow GCS to publish messages
+resource "google_pubsub_topic_iam_member" "gcs_publish" {
+  topic  = google_pubsub_topic.ingest.name
+  role   = "roles/pubsub.publisher"
+  member = "serviceAccount:service-${data.google_project.current.number}@gs-project-accounts.iam.gserviceaccount.com"
+}
+
+resource "google_storage_notification" "raw_events" {
+  bucket         = google_storage_bucket.raw.name
+  topic          = google_pubsub_topic.ingest.id
+  payload_format = "JSON_API_V1"
+  event_types    = ["OBJECT_FINALIZE"]
+}
+
+# ---------------------------------------------------
+# Service Account (NEW)
+# ---------------------------------------------------
+resource "google_service_account" "batch" {
+  account_id   = "batch-processor-sa"
+  display_name = "Cloud Run Batch Processor"
+}
+
+resource "google_project_iam_member" "sa_storage" {
+  project = var.project_id
+  role    = "roles/storage.objectAdmin"
+  member  = "serviceAccount:${google_service_account.batch.email}"
+}
+
+resource "google_project_iam_member" "sa_vertex" {
+  project = var.project_id
+  role    = "roles/aiplatform.user"
+  member  = "serviceAccount:${google_service_account.batch.email}"
+}
+
+# ---------------------------------------------------
+# Cloud Run (NEW, image reused)
+# ---------------------------------------------------
+resource "google_cloud_run_v2_service" "batch" {
+  name     = "batch-processor"
+  location = var.region
+
+  template {
+    service_account = google_service_account.batch.email
+
+    containers {
+      image = var.container_image
+
+      ports {
+        container_port = 8080
+      }
+
+      env {
+        name  = "PROJECT_ID"
+        value = var.project_id
+      }
+
+      env {
+        name  = "REGION"
+        value = var.region
+      }
+
+      env {
+        name  = "RAW_BUCKET"
+        value = google_storage_bucket.raw.name
+      }
+
+      env {
+        name  = "OUT_BUCKET"
+        value = google_storage_bucket.out.name
+      }
+    }
+  }
+}
+
+resource "google_cloud_run_v2_service_iam_member" "invoke" {
+  name     = google_cloud_run_v2_service.batch.name
+  location = var.region
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.batch.email}"
+}
+
+
+variable "project_id" {
+  type = string
+}
+
+variable "region" {
+  type    = string
+  default = "us-central1"
+}
+
+variable "raw_bucket" {
+  type = string
+}
+
+variable "out_bucket" {
+  type = string
+}
+
+variable "container_image" {
+  type = string
+}
+
+
+
+
+project_id = "us-con-gcp-sbx-dep0031-081524"
+region     = "us-central1"
+
+raw_bucket = "doc-raw-input-tf"
+out_bucket = "doc-embedding-output-tf"
+
+# Reusing existing image from Artifact Registry / GCR
+container_image = "us-central1-docker.pkg.dev/us-con-gcp-sbx-dep0031-081524/batch/batch-processor:latest"
+
+
+
+
+
+  output "cloud_run_url" {
+  value = google_cloud_run_v2_service.batch.uri
+}
+
+
+
