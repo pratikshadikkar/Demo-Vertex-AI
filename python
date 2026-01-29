@@ -2,63 +2,129 @@ import base64
 import json
 import os
 import uuid
-from fastapi import FastAPI, Request
+import logging
+
+from fastapi import FastAPI, Request, HTTPException
 from google.cloud import storage
 import vertexai
 from vertexai.preview.language_models import TextEmbeddingModel
 
-PROJECT_ID = os.environ["PROJECT_ID"]
-REGION = os.environ["REGION"]
-RAW_BUCKET = os.environ["RAW_BUCKET"]
-OUT_BUCKET = os.environ["OUT_BUCKET"]
+# -------------------------
+# Environment variables
+# -------------------------
+PROJECT_ID = os.getenv("PROJECT_ID")
+REGION = os.getenv("REGION")
+RAW_BUCKET = os.getenv("RAW_BUCKET")
+OUT_BUCKET = os.getenv("OUT_BUCKET")
 
+if not all([PROJECT_ID, REGION, RAW_BUCKET, OUT_BUCKET]):
+    raise RuntimeError("Missing required environment variables")
+
+# -------------------------
+# Init clients
+# -------------------------
 vertexai.init(project=PROJECT_ID, location=REGION)
 
-embedding_model = TextEmbeddingModel.from_pretrained("text-embedding-004")
+embedding_model = TextEmbeddingModel.from_pretrained(
+    "text-embedding-004"
+)
 storage_client = storage.Client()
 
+# -------------------------
+# App
+# -------------------------
 app = FastAPI()
+logging.basicConfig(level=logging.INFO)
 
-def chunk_text(text, chunk_size=512):
-    return [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
+# -------------------------
+# Helpers
+# -------------------------
+def chunk_text(text: str, chunk_size: int = 512):
+    """Split text into fixed-size chunks"""
+    return [
+        text[i : i + chunk_size]
+        for i in range(0, len(text), chunk_size)
+        if text[i : i + chunk_size].strip()
+    ]
 
+# -------------------------
+# Pub/Sub Push Endpoint
+# -------------------------
 @app.post("/")
 async def ingest(request: Request):
-    envelope = await request.json()
-    message = envelope["message"]
-    data = base64.b64decode(message["data"]).decode("utf-8")
-    event = json.loads(data)
+    try:
+        envelope = await request.json()
 
-    bucket_name = event["bucket"]
-    file_name = event["name"]
+        if "message" not in envelope:
+            raise HTTPException(status_code=400, detail="Invalid Pub/Sub message")
 
-    blob = storage_client.bucket(bucket_name).blob(file_name)
-    text = blob.download_as_text()
+        message = envelope["message"]
+        data = base64.b64decode(message["data"]).decode("utf-8")
+        event = json.loads(data)
 
-    chunks = chunk_text(text)
+        bucket_name = event["bucket"]
+        file_name = event["name"]
 
-    vectors = []
-    embeddings = embedding_model.get_embeddings(chunks)
+        logging.info(f"Processing file: gs://{bucket_name}/{file_name}")
 
-    for i, emb in enumerate(embeddings):
-        vectors.append({
-            "id": f"{file_name}-{i}",
-            "embedding": emb.values,
-            "metadata": {
-                "source_file": file_name,
-                "chunk_index": i
-            }
-        })
+        # Only process expected bucket
+        if bucket_name != RAW_BUCKET:
+            logging.warning("Skipping unexpected bucket")
+            return {"status": "skipped"}
 
-    out_blob = storage_client.bucket(OUT_BUCKET).blob(
-        f"{file_name}-{uuid.uuid4()}.json"
-    )
+        # -------------------------
+        # Download file
+        # -------------------------
+        blob = storage_client.bucket(bucket_name).blob(file_name)
+        text = blob.download_as_text()
 
-    jsonl_data = "\n".join(json.dumps(v) for v in vectors)
+        chunks = chunk_text(text)
 
-    out_blob.upload_from_string(
-        jsonl_data,
-        content_type="application/json"
-    )
+        if not chunks:
+            logging.warning("No text chunks found")
+            return {"status": "empty"}
 
-    return {"status": "success", "chunks": len(chunks)}
+        # -------------------------
+        # Generate embeddings
+        # -------------------------
+        embeddings = embedding_model.get_embeddings(chunks)
+
+        # -------------------------
+        # Build JSONL records
+        # -------------------------
+        records = []
+        for i, emb in enumerate(embeddings):
+            records.append({
+                "id": f"{file_name}-{i}",
+                "embedding": emb.values,
+                "metadata": {
+                    "source_file": file_name,
+                    "chunk_index": i
+                }
+            })
+
+        # IMPORTANT: JSON Lines format (one object per line)
+        jsonl_data = "\n".join(json.dumps(r) for r in records)
+
+        # -------------------------
+        # Upload to output bucket
+        # -------------------------
+        out_blob = storage_client.bucket(OUT_BUCKET).blob(
+            f"{file_name}-{uuid.uuid4()}.jsonl"
+        )
+
+        out_blob.upload_from_string(
+            jsonl_data,
+            content_type="application/json"
+        )
+
+        logging.info(f"Successfully processed {len(records)} chunks")
+
+        return {
+            "status": "success",
+            "chunks": len(records)
+        }
+
+    except Exception as e:
+        logging.exception("Processing failed")
+        raise HTTPException(status_code=500, detail=str(e))
