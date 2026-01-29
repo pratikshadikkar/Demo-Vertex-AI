@@ -106,3 +106,12 @@ resource "google_project_iam_member" "vertex_user" {
   role    = "roles/aiplatform.user"
   member  = "serviceAccount:${google_service_account.batch.email}"
 }
+
+
+jsonl_data = "\n".join(json.dumps(v) for v in vectors)
+
+out_blob.upload_from_string(
+    jsonl_data,
+    content_type="application/json"
+)
+
