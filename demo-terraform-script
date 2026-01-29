@@ -94,7 +94,7 @@ resource "google_storage_notification" "raw_events" {
 # Service Account (NEW)
 # ---------------------------------------------------
 resource "google_service_account" "batch" {
-  account_id   = "batch-processor-sa"
+  account_id   = "batch-processor-sa-tf"
   display_name = "Cloud Run Batch Processor"
 }
 
