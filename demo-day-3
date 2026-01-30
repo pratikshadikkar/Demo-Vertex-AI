@@ -89,3 +89,88 @@ resource "google_vertex_ai_index_endpoint" "vector_endpoint_with_index" {
     google_vertex_ai_index.vector_index
   ]
 }
+
+
+##################################################################################################################
+
+import os
+import vertexai
+from vertexai.preview.language_models import TextEmbeddingModel
+from vertexai.preview.matching_engine import MatchingEngineIndexEndpoint
+
+# ------------------------------------------------
+# Configuration (use env vars in prod if needed)
+# ------------------------------------------------
+PROJECT_ID = os.getenv("PROJECT_ID", "us-con-gcp-sbx-dep0031-081524")
+REGION = os.getenv("REGION", "us-central1")
+
+# From Vertex AI → Vector Search → Index Endpoints
+INDEX_ENDPOINT_ID = os.getenv(
+    "INDEX_ENDPOINT_ID",
+    "YOUR_INDEX_ENDPOINT_ID"
+)
+
+# Must match the deployed_index_id in Terraform
+DEPLOYED_INDEX_ID = os.getenv(
+    "DEPLOYED_INDEX_ID",
+    "doc-embeddings"
+)
+
+TOP_K = int(os.getenv("TOP_K", "5"))
+
+# ------------------------------------------------
+# Init Vertex AI
+# ------------------------------------------------
+vertexai.init(project=PROJECT_ID, location=REGION)
+
+embedding_model = TextEmbeddingModel.from_pretrained(
+    "text-embedding-004"
+)
+
+# ------------------------------------------------
+# Vector Search Query Function
+# ------------------------------------------------
+def vector_search(query_text: str):
+    # 1️⃣ Create embedding for query
+    query_embedding = embedding_model.get_embeddings(
+        [query_text]
+    )[0].values
+
+    # 2️⃣ Connect to index endpoint
+    endpoint = MatchingEngineIndexEndpoint(
+        index_endpoint_name=(
+            f"projects/{PROJECT_ID}/locations/{REGION}"
+            f"/indexEndpoints/{INDEX_ENDPOINT_ID}"
+        )
+    )
+
+    # 3️⃣ Run similarity search
+    response = endpoint.find_neighbors(
+        deployed_index_id=DEPLOYED_INDEX_ID,
+        queries=[query_embedding],
+        num_neighbors=TOP_K
+    )
+
+    # 4️⃣ Format results
+    results = []
+    for neighbor in response[0]:
+        results.append({
+            "id": neighbor.id,
+            "distance": neighbor.distance,
+            "source_file": neighbor.datapoint.metadata.get("source_file"),
+            "chunk_index": neighbor.datapoint.metadata.get("chunk_index")
+        })
+
+    return results
+
+# ------------------------------------------------
+# CLI usage
+# ------------------------------------------------
+if __name__ == "__main__":
+    query = input("Enter search query: ")
+    results = vector_search(query)
+
+    print("\nTop Matches:")
+    for r in results:
+        print(r)
+
