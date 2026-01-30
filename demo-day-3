@@ -43,3 +43,50 @@ for neighbor in response[0]:
         "distance": neighbor.distance,
         "metadata": neighbor.datapoint.metadata
     })
+
+###############################################################################################################
+
+
+resource "google_vertex_ai_index" "vector_index" {
+  display_name = "doc-vector-index"
+  region       = var.region
+
+  metadata {
+    contents_delta_uri = "gs://${var.embedding_bucket}"
+    config {
+      dimensions                  = 768
+      approximate_neighbors_count  = 150
+      distance_measure_type        = "COSINE_DISTANCE"
+      algorithm_config {
+        tree_ah_config {
+          leaf_node_embedding_count = 1000
+          leaf_nodes_to_search       = 100
+        }
+      }
+    }
+  }
+}
+
+resource "google_vertex_ai_index_endpoint" "vector_endpoint" {
+  display_name = "doc-vector-endpoint"
+  region       = var.region
+
+  index_endpoint_config {
+    network = "projects/${var.project_id}/global/networks/default"
+  }
+}
+
+# ✅ THIS is how deployment is done in v2
+resource "google_vertex_ai_index_endpoint" "vector_endpoint_with_index" {
+  depends_on = [
+    google_vertex_ai_index.vector_index
+  ]
+
+  name   = google_vertex_ai_index_endpoint.vector_endpoint.name
+  region = var.region
+
+  deployed_indexes {
+    index = google_vertex_ai_index.vector_index.name
+    deployed_index_id = "doc-embeddings"
+  }
+}
