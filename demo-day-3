@@ -1,0 +1,7 @@
+gcloud ai index-endpoints find-neighbors \
+  --project=PROJECT_ID \
+  --region=REGION \
+  --index-endpoint=INDEX_ENDPOINT_ID \
+  --deployed-index-id=DEPLOYED_INDEX_ID \
+  --query='[0.01, 0.02, ...]' \
+  --neighbor-count=5
