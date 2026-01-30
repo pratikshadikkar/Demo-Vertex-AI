@@ -225,3 +225,22 @@ if __name__ == "__main__":
     q = input("Enter query: ")
     vector_search(q)
 
+#########################################################################################
+#########################################################################################
+
+Set variables
+PROJECT_ID="your-project-id"
+REGION="us-central1"
+INDEX_ID="1234567890123456789"
+GCS_URI="gs://your-embedding-bucket/vectors/"
+
+2️⃣ Run batch update
+gcloud ai indexes update $INDEX_ID \
+  --project=$PROJECT_ID \
+  --region=$REGION \
+  --contents-delta-uri=$GCS_URI
+
+3️⃣ Monitor progress
+gcloud ai operations list \
+  --project=$PROJECT_ID \
+  --region=$REGION
