@@ -5,3 +5,41 @@ gcloud ai index-endpoints find-neighbors \
   --deployed-index-id=DEPLOYED_INDEX_ID \
   --query='[0.01, 0.02, ...]' \
   --neighbor-count=5
+
+
+import vertexai
+from vertexai.preview.matching_engine import MatchingEngineIndexEndpoint
+from vertexai.preview.language_models import TextEmbeddingModel
+
+PROJECT_ID = "your-project-id"
+REGION = "us-central1"
+INDEX_ENDPOINT_ID = "your-index-endpoint-id"
+DEPLOYED_INDEX_ID = "doc_embeddings_deployed"
+
+# 1. Init Vertex AI
+vertexai.init(project=PROJECT_ID, location=REGION)
+
+# 2. Create embedding for query
+embedding_model = TextEmbeddingModel.from_pretrained("text-embedding-004")
+query_text = "invoice payment due date"
+query_embedding = embedding_model.get_embeddings([query_text])[0].values
+
+# 3. Connect to Vector Search endpoint
+endpoint = MatchingEngineIndexEndpoint(
+    index_endpoint_name=f"projects/{PROJECT_ID}/locations/{REGION}/indexEndpoints/{INDEX_ENDPOINT_ID}"
+)
+
+# 4. Run similarity search
+response = endpoint.find_neighbors(
+    deployed_index_id=DEPLOYED_INDEX_ID,
+    queries=[query_embedding],
+    num_neighbors=5
+)
+
+# 5. Print results
+for neighbor in response[0]:
+    print({
+        "id": neighbor.id,
+        "distance": neighbor.distance,
+        "metadata": neighbor.datapoint.metadata
+    })
