@@ -76,7 +76,6 @@ resource "google_vertex_ai_index_endpoint" "vector_endpoint" {
   }
 }
 
-# ✅ THIS is how deployment is done in v2
 resource "google_vertex_ai_index_endpoint" "vector_endpoint_with_index" {
   depends_on = [
     google_vertex_ai_index.vector_index
