@@ -1,0 +1,484 @@
+# GCS Buckets
+# ---------------------------------------------------
+resource "google_storage_bucket" "raw" {
+  name     = var.raw_bucket
+  location = var.region
+
+  uniform_bucket_level_access = true
+}
+
+resource "google_storage_bucket" "out" {
+  name     = var.out_bucket
+  location = var.region
+
+  uniform_bucket_level_access = true
+}
+
+# ---------------------------------------------------
+# Pub/Sub
+# ---------------------------------------------------
+resource "google_pubsub_topic" "ingest" {
+  name = "doc-ingest-topic-tf"
+}
+
+resource "google_pubsub_subscription" "push" {
+  name  = "doc-ingest-push-tf"
+  topic = google_pubsub_topic.ingest.id
+
+  push_config {
+    push_endpoint = google_cloud_run_v2_service.batch.uri
+
+    oidc_token {
+      service_account_email = google_service_account.batch.email
+      audience               = google_cloud_run_v2_service.batch.uri
+    }
+  }
+
+  ack_deadline_seconds = 10
+}
+
+# Allow GCS to publish messages
+resource "google_pubsub_topic_iam_member" "gcs_publish" {
+  topic  = google_pubsub_topic.ingest.name
+  role   = "roles/pubsub.publisher"
+  member = "serviceAccount:service-${data.google_project.current.number}@gs-project-accounts.iam.gserviceaccount.com"
+}
+
+resource "google_storage_notification" "raw_events" {
+  bucket         = google_storage_bucket.raw.name
+  topic          = google_pubsub_topic.ingest.id
+  payload_format = "JSON_API_V1"
+  event_types    = ["OBJECT_FINALIZE"]
+}
+
+# ---------------------------------------------------
+# Service Account
+# ---------------------------------------------------
+resource "google_service_account" "batch" {
+  account_id   = "batch-processor-sa-tf"
+  display_name = "Cloud Run Batch Processor"
+}
+
+resource "google_project_iam_member" "sa_storage" {
+  project = var.project_id
+  role    = "roles/storage.objectAdmin"
+  member  = "serviceAccount:${google_service_account.batch.email}"
+}
+
+resource "google_project_iam_member" "sa_vertex" {
+  project = var.project_id
+  role    = "roles/aiplatform.user"
+  member  = "serviceAccount:${google_service_account.batch.email}"
+}
+
+# ---------------------------------------------------
+# Cloud Run
+# ---------------------------------------------------
+resource "google_cloud_run_v2_service" "batch" {
+  name     = "batch-processor-tf"
+  location = var.region
+
+  template {
+    service_account = google_service_account.batch.email
+
+    containers {
+      image = var.container_image
+
+      ports {
+        container_port = 8080
+      }
+
+      env {
+        name  = "PROJECT_ID"
+        value = var.project_id
+      }
+
+      env {
+        name  = "REGION"
+        value = var.region
+      }
+
+      env {
+        name  = "RAW_BUCKET"
+        value = google_storage_bucket.raw.name
+      }
+
+      env {
+        name  = "OUT_BUCKET"
+        value = google_storage_bucket.out.name
+      }
+    }
+  }
+}
+
+resource "google_cloud_run_v2_service_iam_member" "invoke" {
+  name     = google_cloud_run_v2_service.batch.name
+  location = var.region
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.batch.email}"
+}
+
+resource "google_vertex_ai_index" "vector_index" {
+  project      = var.project_id
+  region       = var.region
+  display_name = var.vector_index_name
+
+  metadata {
+    contents_delta_uri = "gs://${var.out_bucket}/"
+
+    config {
+      dimensions = var.embedding_dimensions
+
+      approximate_neighbors_count = 100
+      distance_measure_type       = "DOT_PRODUCT_DISTANCE"
+
+      algorithm_config {
+        tree_ah_config {
+          leaf_node_embedding_count = 500
+          leaf_nodes_to_search_percent  = 10
+        }
+      }
+    }
+  }
+
+  index_update_method = "STREAM_UPDATE"
+}
+
+resource "google_vertex_ai_index_endpoint" "vector_endpoint" {
+  project      = var.project_id
+  region       = var.region
+  display_name = var.vector_endpoint_name
+
+  public_endpoint_enabled = true
+}
+
+# resource "google_vertex_ai_index_endpoint_deployed_index" "deploy_index" {
+#   index_endpoint   = google_vertex_ai_index_endpoint.vector_endpoint.name
+#   index            = google_vertex_ai_index.vector_index.name
+#   deployed_index_id = "doc_embeddings_deployed-tf"
+
+#   dedicated_resources {
+#     machine_spec {
+#       machine_type = "e2-standard-2"
+#     }
+
+#     min_replica_count = 1
+#     max_replica_count = 1
+#   }
+# }
+
+
+resource "google_vertex_ai_index_endpoint_deployed_index" "deploy_index" {
+  deployed_index_id  = "embedded_index_12345"
+  index_endpoint     = google_vertex_ai_index_endpoint.vector_endpoint.id
+  index              = google_vertex_ai_index.vector_index.id
+}
+
+
+resource "google_project_iam_member" "vertex_user" {
+  project = var.project_id
+  role    = "roles/aiplatform.user"
+  member  = "serviceAccount:${google_service_account.batch.email}"
+}
+
+###############################################################################
+###############################################################################
+
+ output "cloud_run_url" {
+  value = google_cloud_run_v2_service.batch.uri
+}
+##############################################################################
+
+terraform {
+  required_version = ">= 1.4.0"
+
+  required_providers {
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 5.20"
+    }
+  }
+}
+
+provider "google" {
+  project = var.project_id
+  region  = var.region
+}
+
+data "google_project" "current" {
+  project_id = var.project_id
+}
+
+# ---------------------------------------------------
+# Enable APIs (safe if already enabled)
+# ---------------------------------------------------
+# resource "google_project_service" "apis" {
+#   for_each = toset([
+#     "run.googleapis.com",
+#     "storage.googleapis.com",
+#     "pubsub.googleapis.com",
+#     "artifactregistry.googleapis.com",
+#     "aiplatform.googleapis.com",
+#     "cloudbuild.googleapis.com",
+#     "logging.googleapis.com"
+#   ])
+
+#   service            = each.value
+#   disable_on_destroy = false
+# }
+
+
+
+#######################################################################
+
+project_id = "us-con-gcp-sbx-dep0031-081524"
+region     = "us-central1"
+
+raw_bucket = "doc-raw-input-tf"
+out_bucket = "doc-embedding-output-tf"
+
+# Reusing existing image from Artifact Registry / GCR
+container_image = "us-central1-docker.pkg.dev/us-con-gcp-sbx-dep0031-081524/batch-repo/batch-processor:latest"
+
+#####################################################################
+
+variable "project_id" {
+  type = string
+}
+
+variable "region" {
+  type    = string
+  default = "us-central1"
+}
+
+variable "raw_bucket" {
+  type = string
+}
+
+variable "out_bucket" {
+  type = string
+}
+
+variable "container_image" {
+  type = string
+}
+
+variable "vector_index_name" {
+  type    = string
+  default = "doc-embeddings-index-tf"
+}
+
+variable "vector_endpoint_name" {
+  type    = string
+  default = "doc-embeddings-endpoint-tf"
+}
+
+# variable "embeddings_bucket" {
+#   type        = string
+#   description = "Bucket where embedding JSON files are written"
+# }
+
+variable "embedding_dimensions" {
+  type    = number
+  default = 768
+}
+
+####################################################################
+
+FROM python:3.10-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY main.py .
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+
+#################################################################
+
+import base64
+import json
+import os
+import uuid
+import logging
+
+from fastapi import FastAPI, Request, HTTPException
+from google.cloud import storage
+import vertexai
+from vertexai.preview.language_models import TextEmbeddingModel
+
+# -------------------------
+# Environment variables
+# -------------------------
+PROJECT_ID = os.getenv("PROJECT_ID")
+REGION = os.getenv("REGION")
+RAW_BUCKET = os.getenv("RAW_BUCKET")
+OUT_BUCKET = os.getenv("OUT_BUCKET")
+
+if not all([PROJECT_ID, REGION, RAW_BUCKET, OUT_BUCKET]):
+    raise RuntimeError("Missing required environment variables")
+
+# -------------------------
+# Init clients
+# -------------------------
+vertexai.init(project=PROJECT_ID, location=REGION)
+
+embedding_model = TextEmbeddingModel.from_pretrained(
+    "text-embedding-004"
+)
+storage_client = storage.Client()
+
+# -------------------------
+# App
+# -------------------------
+app = FastAPI()
+logging.basicConfig(level=logging.INFO)
+
+# -------------------------
+# Helpers
+# -------------------------
+def chunk_text(text: str, chunk_size: int = 512):
+    """Split text into fixed-size chunks"""
+    return [
+        text[i : i + chunk_size]
+        for i in range(0, len(text), chunk_size)
+        if text[i : i + chunk_size].strip()
+    ]
+
+# -------------------------
+# Pub/Sub Push Endpoint
+# -------------------------
+@app.post("/")
+async def ingest(request: Request):
+    try:
+        envelope = await request.json()
+
+        if "message" not in envelope:
+            raise HTTPException(status_code=400, detail="Invalid Pub/Sub message")
+
+        message = envelope["message"]
+        data = base64.b64decode(message["data"]).decode("utf-8")
+        event = json.loads(data)
+
+        bucket_name = event["bucket"]
+        file_name = event["name"]
+
+        logging.info(f"Processing file: gs://{bucket_name}/{file_name}")
+
+        # Only process expected bucket
+        if bucket_name != RAW_BUCKET:
+            logging.warning("Skipping unexpected bucket")
+            return {"status": "skipped"}
+
+        # -------------------------
+        # Download file
+        # -------------------------
+        blob = storage_client.bucket(bucket_name).blob(file_name)
+        text = blob.download_as_text()
+
+        chunks = chunk_text(text)
+
+        if not chunks:
+            logging.warning("No text chunks found")
+            return {"status": "empty"}
+
+        # -------------------------
+        # Generate embeddings
+        # -------------------------
+        embeddings = embedding_model.get_embeddings(chunks)
+
+        # -------------------------
+        # Build JSON records
+        # -------------------------
+        records = []
+        for i, emb in enumerate(embeddings):
+            records.append({
+                "id": f"{file_name}-{i}",
+                "embedding": emb.values,
+                "metadata": {
+                    "source_file": file_name,
+                    "chunk_index": i
+                }
+            })
+
+        # IMPORTANT: JSON Lines format (one object per line)
+        jsonl_data = "\n".join(json.dumps(r) for r in records)
+
+        # -------------------------
+        # Upload to output bucket
+        # -------------------------
+        out_blob = storage_client.bucket(OUT_BUCKET).blob(
+            f"{file_name}-{uuid.uuid4()}.json"
+        )
+
+        out_blob.upload_from_string(
+            jsonl_data,
+            content_type="application/json"
+        )
+
+        logging.info(f"Successfully processed {len(records)} chunks")
+
+        return {
+            "status": "success",
+            "chunks": len(records)
+        }
+
+    except Exception as e:
+        logging.exception("Processing failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+################################################################
+
+fastapi
+uvicorn
+google-cloud-storage
+google-cloud-aiplatform
+
+##########################################
+
+def vector_search(query_text: str):
+    # Create embedding for query
+    query_embedding = embedding_model.get_embeddings(
+        [query_text]
+    )[0].values
+
+    # Connect to index endpoint
+    endpoint = MatchingEngineIndexEndpoint(
+        index_endpoint_name=(
+            f"projects/{PROJECT_ID}/locations/{REGION}"
+            f"/indexEndpoints/{INDEX_ENDPOINT_ID}"
+        )
+    )
+
+    # Run similarity search
+    response = endpoint.find_neighbors(
+        deployed_index_id=DEPLOYED_INDEX_ID,
+        queries=[query_embedding],
+        num_neighbors=TOP_K
+    )
+
+    # Format results
+    results = []
+    for neighbor in response[0]:
+        results.append({
+            "id": neighbor.id,
+            "distance": neighbor.distance,
+            "source_file": neighbor.datapoint.metadata.get("source_file"),
+            "chunk_index": neighbor.datapoint.metadata.get("chunk_index")
+        })
+
+    return results
+
+# ------------------------------------------------
+# CLI usage
+# ------------------------------------------------
+if __name__ == "__main__":
+    query = input("Enter search query: ")
+    results = vector_search(query)
+
+    print("\nTop Matches:")
+    for r in results:
+        print(r)
+########################################################
