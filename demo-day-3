@@ -174,3 +174,54 @@ if __name__ == "__main__":
     for r in results:
         print(r)
 
+
+
+################################################################################################
+################################################################################################
+
+import os
+import vertexai
+from google.cloud.aiplatform.matching_engine import MatchingEngineIndexEndpoint
+from vertexai.preview.language_models import TextEmbeddingModel
+
+PROJECT_ID = "us-con-gcp-sbx-dep0031-081524"
+REGION = "us-central1"
+
+INDEX_ENDPOINT_ID = "YOUR_INDEX_ENDPOINT_ID"
+DEPLOYED_INDEX_ID = "doc-embeddings"
+
+vertexai.init(project=PROJECT_ID, location=REGION)
+
+embedding_model = TextEmbeddingModel.from_pretrained(
+    "text-embedding-004"
+)
+
+def vector_search(query_text: str, top_k: int = 5):
+    query_embedding = embedding_model.get_embeddings(
+        [query_text]
+    )[0].values
+
+    endpoint = MatchingEngineIndexEndpoint(
+        index_endpoint_name=(
+            f"projects/{PROJECT_ID}/locations/{REGION}"
+            f"/indexEndpoints/{INDEX_ENDPOINT_ID}"
+        )
+    )
+
+    response = endpoint.find_neighbors(
+        deployed_index_id=DEPLOYED_INDEX_ID,
+        queries=[query_embedding],
+        num_neighbors=top_k,
+    )
+
+    for neighbor in response[0]:
+        print({
+            "id": neighbor.id,
+            "distance": neighbor.distance,
+            "metadata": neighbor.datapoint.metadata
+        })
+
+if __name__ == "__main__":
+    q = input("Enter query: ")
+    vector_search(q)
+
