@@ -39,3 +39,13 @@ else:
             "distance": neighbor.distance,
             "metadata": neighbor.metadata
         })
+##################################################################################
+
+gcloud services enable \
+  aiplatform.googleapis.com \
+  compute.googleapis.com \
+  storage.googleapis.com \
+  iam.googleapis.com \
+  iamcredentials.googleapis.com \
+  cloudresourcemanager.googleapis.com \
+  serviceusage.googleapis.com
