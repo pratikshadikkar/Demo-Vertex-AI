@@ -61,3 +61,16 @@ gcloud projects add-iam-policy-binding $PROJECT_ID \
 gcloud projects add-iam-policy-binding $PROJECT_ID \
   --member="user:${USER_EMAIL}" \
   --role="roles/aiplatform.viewer"
+##################################################################
+
+gcloud services enable \
+  aiplatform.googleapis.com \
+  compute.googleapis.com \
+  storage.googleapis.com \
+  iam.googleapis.com \
+  iamcredentials.googleapis.com \
+  cloudresourcemanager.googleapis.com \
+  serviceusage.googleapis.com \
+  pubsub.googleapis.com \
+  run.googleapis.com \
+  cloudbuild.googleapis.com
