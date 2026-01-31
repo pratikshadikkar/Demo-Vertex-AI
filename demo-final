@@ -74,3 +74,46 @@ gcloud services enable \
   pubsub.googleapis.com \
   run.googleapis.com \
   cloudbuild.googleapis.com
+##########################################################
+
+from google.cloud import aiplatform
+from google.cloud.aiplatform.matching_engine import MatchingEngineIndexEndpoint
+from vertexai.preview.language_models import TextEmbeddingModel
+import vertexai
+
+PROJECT_ID = "	us-con-gcp-sbx-dep0031-081524"
+REGION = "us-central1"
+INDEX_ENDPOINT_ID = "8712928161706278912"
+DEPLOYED_INDEX_ID = "vector_deploy_1769748537291"
+
+# Init
+vertexai.init(project=PROJECT_ID, location=REGION)
+aiplatform.init(project=PROJECT_ID, location=REGION)
+
+# Create embedding
+model = TextEmbeddingModel.from_pretrained("text-embedding-004")
+query = input("Enter query: ")
+query_vector = model.get_embeddings([query])[0].values
+
+# Connect to index endpoint
+endpoint = MatchingEngineIndexEndpoint(
+    index_endpoint_name=f"projects/{PROJECT_ID}/locations/{REGION}/indexEndpoints/{INDEX_ENDPOINT_ID}"
+)
+
+# Vector search
+response = endpoint.find_neighbors(
+    deployed_index_id=DEPLOYED_INDEX_ID,
+    queries=[query_vector],
+    num_neighbors=5
+)
+
+# Print results
+if not response or not response[0]:
+    print("No matches found")
+else:
+    for neighbor in response[0]:
+        print({
+            "id": neighbor.id,
+            "distance": neighbor.distance,
+            "metadata": neighbor.metadata
+        })
