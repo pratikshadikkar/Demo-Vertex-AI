@@ -49,3 +49,15 @@ gcloud services enable \
   iamcredentials.googleapis.com \
   cloudresourcemanager.googleapis.com \
   serviceusage.googleapis.com
+################################################################
+
+PROJECT_ID=us-con-gcp-sbx-dep0031-081524
+USER_EMAIL=$(gcloud config get-value account)
+
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="user:${USER_EMAIL}" \
+  --role="roles/aiplatform.user"
+
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="user:${USER_EMAIL}" \
+  --role="roles/aiplatform.viewer"
