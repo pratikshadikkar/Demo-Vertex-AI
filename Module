@@ -1,0 +1,28 @@
+terraform module structure:
+terraform/
+├── main.tf
+├── variables.tf
+├── outputs.tf
+├── terraform.tfvars
+├── providers.tf
+└── modules/
+├── gcs/
+│ ├── main.tf
+│ ├── variables.tf
+│ └── outputs.tf
+├── pubsub/
+│ ├── main.tf
+│ ├── variables.tf
+│ └── outputs.tf
+├── service_account/
+│ ├── main.tf
+│ ├── variables.tf
+│ └── outputs.tf
+├── cloudrun/
+│ ├── main.tf
+│ ├── variables.tf
+│ └── outputs.tf
+└── vertex_ai/
+├── main.tf
+├── variables.tf
+└── outputs.tf
